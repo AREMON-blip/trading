@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Crypto Futures Journal & Cloud Sync</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global State & Firebase Config
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'trading-tracker-v1';
+
+        let userUid = null;
+        window.currentData = {
+            initialBalance: 3,
+            currentBalance: 3,
+            trades: []
+        };
+
+        // UI Update Functions
+        window.updateUI = () => {
+            const data = window.currentData;
+            const totalPnl = data.currentBalance - data.initialBalance;
+            const growth = data.initialBalance > 0 ? (totalPnl / data.initialBalance) * 100 : 0;
+            const wins = data.trades.filter(t => t.netProfit > 0).length;
+            const winRate = data.trades.length > 0 ? (wins / data.trades.length * 100).toFixed(1) : 0;
+
+            document.getElementById('totalBalanceDisplay').innerText = formatCurrency(data.currentBalance);
+            document.getElementById('winRateDisplay').innerText = winRate + "%";
+            document.getElementById('totalPnlDisplay').innerText = (totalPnl >= 0 ? '+' : '') + formatCurrency(totalPnl);
+            document.getElementById('totalPnlDisplay').className = `text-2xl font-bold ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            
+            const growthEl = document.getElementById('growthDisplay');
+            growthEl.innerText = `${growth >= 0 ? '+' : ''}${growth.toFixed(2)}% Growth`;
+            growthEl.className = growth >= 0 ? "px-2 py-1 rounded-md bg-green-500/10 text-green-400 text-xs font-bold" : "px-2 py-1 rounded-md bg-red-500/10 text-red-400 text-xs font-bold";
+            
+            renderHistory();
+        };
+
+        // Sync to Cloud
+        const syncToCloud = async () => {
+            if (!userUid) return;
+            try {
+                const userDoc = doc(db, 'artifacts', appId, 'users', userUid, 'settings', 'tradingData');
+                await setDoc(userDoc, window.currentData);
+            } catch (e) {
+                console.error("Cloud sync failed", e);
+            }
+        };
+
+        // Authentication & Real-time Listener
+        const initApp = async () => {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    userUid = user.uid;
+                    document.getElementById('userIdDisplay').innerText = `Sync Active: ${user.uid}`;
+                    
+                    // Listen to changes
+                    const userDoc = doc(db, 'artifacts', appId, 'users', userUid, 'settings', 'tradingData');
+                    onSnapshot(userDoc, (docSnap) => {
+                        if (docSnap.exists()) {
+                            window.currentData = docSnap.data();
+                            window.updateUI();
+                        } else {
+                            syncToCloud();
+                        }
+                    }, (err) => console.error("Firestore error", err));
+                }
+            });
+        };
+
+        window.addTrade = async () => {
+            const coin = document.getElementById('coinName').value || "UNKNOWN";
+            const entry = parseFloat(document.getElementById('entryPrice').value);
+            const exit = parseFloat(document.getElementById('exitPrice').value);
+            const margin = parseFloat(document.getElementById('margin').value);
+            const lev = parseFloat(document.getElementById('leverage').value);
+            
+            if (isNaN(entry) || isNaN(exit) || isNaN(margin) || isNaN(lev)) return;
+
+            const positionSize = margin * lev;
+            let priceDiffPercent = (window.tradeSide === 'SHORT') ? ((entry - exit) / entry) : ((exit - entry) / entry);
+
+            const netProfit = (positionSize * priceDiffPercent) - ((positionSize * 2) * 0.0006);
+            
+            window.currentData.currentBalance += netProfit;
+            window.currentData.trades.unshift({
+                id: Date.now(),
+                coin: coin.toUpperCase(),
+                side: window.tradeSide,
+                entry, exit, lev, margin,
+                roi: (netProfit / margin) * 100,
+                netProfit,
+                balanceAfter: window.currentData.currentBalance
+            });
+
+            await syncToCloud();
+            window.showPnLCard(window.currentData.trades[0]);
+            
+            // Reset fields
+            document.getElementById('coinName').value = '';
+            document.getElementById('entryPrice').value = '';
+            document.getElementById('exitPrice').value = '';
+            document.getElementById('margin').value = '';
+        };
+
+        window.resetBalance = async () => {
+            const val = prompt("Set Modal Awal Lo (USDT):", window.currentData.initialBalance);
+            if (val !== null && !isNaN(parseFloat(val))) {
+                window.currentData.initialBalance = parseFloat(val);
+                window.currentData.currentBalance = window.currentData.initialBalance;
+                window.currentData.trades = [];
+                await syncToCloud();
+            }
+        };
+
+        initApp();
+    </script>
+
+    <style>
+        body {
+            background-color: #000000; /* Hitam Pekat */
+            color: #f8fafc;
+            font-family: 'Inter', sans-serif;
+        }
+        .glass-card { 
+            background: rgba(10, 10, 10, 0.95); 
+            backdrop-filter: blur(12px); 
+            border: 1px solid rgba(255, 255, 255, 0.08); 
+        }
+        #pnlCard { 
+            background: linear-gradient(135deg, #050505 0%, #111111 100%); 
+        }
+        input {
+            background-color: #0a0a0a !important;
+            color: white !important;
+        }
+        /* Custom scrollbar for dark mode */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: #000;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #222;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #333;
+        }
+    </style>
+</head>
+<body class="min-h-screen p-4 md:p-8">
+
+    <div id="modalCard" class="fixed inset-0 bg-black/95 z-50 hidden flex items-center justify-center p-4">
+        <div class="max-w-sm w-full space-y-4">
+            <div id="pnlCard" class="rounded-3xl p-8 border border-white/10 shadow-2xl relative overflow-hidden">
+                <div class="flex justify-between items-start mb-10 relative z-10">
+                    <div>
+                        <h4 id="cardPair" class="text-xl font-bold text-white tracking-tight">BTCUSDT</h4>
+                        <p id="cardSide" class="text-[10px] font-bold px-2 py-0.5 rounded bg-green-500 text-white w-fit mt-1">LONG</p>
+                    </div>
+                    <div class="text-right"><p id="cardStatus" class="text-xs font-black text-green-400">REALIZED PNL</p></div>
+                </div>
+                <div class="mb-10 relative z-10">
+                    <p class="text-slate-400 text-sm mb-1">ROE %</p>
+                    <h2 id="cardRoe" class="text-6xl font-black text-green-400 tracking-tighter">+0.00%</h2>
+                </div>
+                <div class="grid grid-cols-2 gap-4 border-t border-white/5 pt-6 relative z-10 text-xs">
+                    <div><p class="text-slate-500 uppercase">Entry</p><p id="cardEntry" class="text-white font-medium">0.00</p></div>
+                    <div><p class="text-slate-500 uppercase">Exit</p><p id="cardExit" class="text-white font-medium">0.00</p></div>
+                    <div><p class="text-slate-500 uppercase">Profit</p><p id="cardPnl" class="text-green-400 font-bold">+$0.00</p></div>
+                </div>
+            </div>
+            <button onclick="document.getElementById('modalCard').classList.add('hidden')" class="w-full bg-slate-900 text-white py-3 rounded-xl font-bold border border-white/10">Tutup</button>
+        </div>
+    </div>
+
+    <div class="max-w-7xl mx-auto space-y-6">
+        <div id="userIdDisplay" class="text-[9px] text-slate-500 font-mono text-center">Connecting to Cloud...</div>
+        
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="md:col-span-2 glass-card p-6 rounded-3xl border-l-4 border-blue-600">
+                <p class="text-slate-500 uppercase tracking-widest text-[10px] mb-1">Total Equity</p>
+                <h1 id="totalBalanceDisplay" class="text-4xl md:text-5xl font-black text-white">$3.00</h1>
+                <div class="flex items-center gap-4 mt-3">
+                    <span id="growthDisplay" class="px-2 py-1 rounded-md bg-green-500/10 text-green-400 text-xs font-bold">+0% Growth</span>
+                    <button onclick="resetBalance()" class="text-slate-600 hover:text-red-500 text-[10px] uppercase underline transition-colors">Ubah Modal</button>
+                </div>
+            </div>
+            <div class="glass-card p-5 rounded-3xl flex flex-col justify-center border-l-4 border-purple-600">
+                <p class="text-slate-500 text-[10px] uppercase mb-1">Win Rate</p>
+                <h3 id="winRateDisplay" class="text-2xl font-bold text-white">0%</h3>
+            </div>
+            <div class="glass-card p-5 rounded-3xl flex flex-col justify-center border-l-4 border-orange-600">
+                <p class="text-slate-500 text-[10px] uppercase mb-1">Total PNL</p>
+                <h3 id="totalPnlDisplay" class="text-2xl font-bold text-white">$0.00</h3>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            <div class="lg:col-span-4 glass-card p-6 rounded-3xl space-y-4 h-fit">
+                <h2 class="text-lg font-bold text-white">Open Position</h2>
+                <div>
+                    <label class="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Nama Koin</label>
+                    <input type="text" id="coinName" placeholder="Contoh: BTCUSDT" class="w-full border border-white/10 rounded-xl p-2.5 outline-none uppercase font-bold text-blue-500 focus:border-blue-500 transition-all">
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="setSide('LONG')" id="btnLong" class="flex-1 py-2 rounded-lg font-bold bg-green-700 text-white ring-2 ring-green-600 ring-offset-2 ring-offset-black">LONG</button>
+                    <button onclick="setSide('SHORT')" id="btnShort" class="flex-1 py-2 rounded-lg font-bold bg-zinc-900 text-slate-500">SHORT</button>
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <input type="number" id="entryPrice" placeholder="Entry" class="border border-white/10 rounded-xl p-2.5 outline-none focus:border-blue-500 transition-all">
+                    <input type="number" id="exitPrice" placeholder="Exit" class="border border-white/10 rounded-xl p-2.5 outline-none focus:border-blue-500 transition-all">
+                </div>
+                <div class="grid grid-cols-2 gap-3">
+                    <input type="number" id="margin" placeholder="Margin USDT" class="border border-white/10 rounded-xl p-2.5 outline-none focus:border-blue-500 transition-all">
+                    <input type="number" id="leverage" value="10" class="border border-white/10 rounded-xl p-2.5 outline-none focus:border-blue-500 transition-all">
+                </div>
+                <button onclick="addTrade()" class="w-full bg-blue-700 hover:bg-blue-600 text-white font-bold py-4 rounded-xl shadow-lg transition-all active:scale-95">SIMPAN & CLOUD SYNC</button>
+            </div>
+
+            <div class="lg:col-span-8 glass-card p-6 rounded-3xl overflow-hidden flex flex-col">
+                <h2 class="text-lg font-bold text-white mb-4">Trade History</h2>
+                <div class="overflow-x-auto overflow-y-auto max-h-[500px]">
+                    <table class="w-full text-left">
+                        <thead class="sticky top-0 bg-black text-slate-600 text-[10px] uppercase border-b border-white/10">
+                            <tr><th class="p-3">Koin</th><th class="p-3">Posisi</th><th class="p-3 text-center">ROI %</th><th class="p-3 text-center">PnL Nett</th><th class="p-3 text-right">Aksi</th></tr>
+                        </thead>
+                        <tbody id="tradeHistoryBody" class="text-sm"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        window.tradeSide = 'LONG';
+        function setSide(side) {
+            window.tradeSide = side;
+            document.getElementById('btnLong').className = side === 'LONG' ? "flex-1 py-2 rounded-lg font-bold bg-green-700 text-white ring-2 ring-green-600 ring-offset-2 ring-offset-black" : "flex-1 py-2 rounded-lg font-bold bg-zinc-900 text-slate-500";
+            document.getElementById('btnShort').className = side === 'SHORT' ? "flex-1 py-2 rounded-lg font-bold bg-red-700 text-white ring-2 ring-red-600 ring-offset-2 ring-offset-black" : "flex-1 py-2 rounded-lg font-bold bg-zinc-900 text-slate-500";
+        }
+
+        window.showPnLCard = (trade) => {
+            document.getElementById('cardPair').innerText = trade.coin;
+            document.getElementById('cardSide').innerText = `${trade.side} ${trade.lev}x`;
+            document.getElementById('cardSide').className = `text-[10px] font-bold px-2 py-0.5 rounded text-white w-fit mt-1 ${trade.side === 'LONG' ? 'bg-green-700' : 'bg-red-700'}`;
+            document.getElementById('cardRoe').innerText = `${trade.roi >= 0 ? '+' : ''}${trade.roi.toFixed(2)}%`;
+            document.getElementById('cardRoe').className = `text-6xl font-black tracking-tighter ${trade.roi >= 0 ? 'text-green-400' : 'text-red-400'}`;
+            document.getElementById('cardPnl').innerText = `${trade.netProfit >= 0 ? '+' : ''}${formatCurrency(trade.netProfit)}`;
+            document.getElementById('cardEntry').innerText = trade.entry.toLocaleString();
+            document.getElementById('cardExit').innerText = trade.exit.toLocaleString();
+            document.getElementById('modalCard').classList.remove('hidden');
+        };
+
+        function renderHistory() {
+            const body = document.getElementById('tradeHistoryBody');
+            body.innerHTML = window.currentData.trades.map(t => `
+                <tr class="border-b border-white/5 hover:bg-white/[0.02]">
+                    <td class="p-3 font-bold text-blue-500">${t.coin}</td>
+                    <td class="p-3"><span class="${t.side === 'LONG' ? 'text-green-500' : 'text-red-500'} font-bold text-xs">${t.side} ${t.lev}x</span></td>
+                    <td class="p-3 text-center font-bold ${t.roi >= 0 ? 'text-green-400' : 'text-red-400'}">${t.roi.toFixed(1)}%</td>
+                    <td class="p-3 text-center ${t.netProfit >= 0 ? 'text-green-400' : 'text-red-400'}">${formatCurrency(t.netProfit)}</td>
+                    <td class="p-3 text-right"><button onclick='window.showPnLCard(${JSON.stringify(t)})' class="bg-zinc-900 hover:bg-zinc-800 border border-white/5 px-2 py-1 rounded text-white text-[10px] transition-all">BUKTI</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function formatCurrency(val) { return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); }
+    </script>
+</body>
+</html>
