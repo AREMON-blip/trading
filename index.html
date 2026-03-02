@@ -9,147 +9,108 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 1. Inisialisasi Dasar
+        // 1. Inisialisasi Firebase
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'trading-tracker-v1';
 
+        // State Management
         window.currentData = {
             initialBalance: 3,
             currentBalance: 3,
             trades: []
         };
-
         let activeUserId = localStorage.getItem('trading_manual_id');
         let unsubscribe = null;
+        let isAuthReady = false;
 
-        // 2. Fungsi Auth dengan Exponential Backoff (MANDATORY)
-        const performAuth = async (retries = 5, delay = 1000) => {
+        // 2. Auth Flow (Rule 3)
+        const initAuth = async () => {
             try {
                 if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    return await signInWithCustomToken(auth, __initial_auth_token);
+                    await signInWithCustomToken(auth, __initial_auth_token);
                 } else {
-                    return await signInAnonymously(auth);
+                    await signInAnonymously(auth);
                 }
             } catch (err) {
-                if (retries > 0) {
-                    await new Promise(res => setTimeout(res, delay));
-                    return performAuth(retries - 1, delay * 2);
-                }
-                throw err;
+                console.error("Auth Failed", err);
             }
         };
 
-        // 3. Listener Data Firestore
+        onAuthStateChanged(auth, (user) => {
+            if (user) {
+                isAuthReady = true;
+                console.log("Auth Ready:", user.uid);
+                if (activeUserId) {
+                    showApp();
+                    startDataListener(activeUserId);
+                }
+            }
+        });
+
+        // 3. Firestore Logic (Rule 1 & 2)
         const startDataListener = (id) => {
-            if (!auth.currentUser) return; // Guard Rule 3
+            if (!isAuthReady) return;
             if (unsubscribe) unsubscribe();
 
-            const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
+            // Path: /artifacts/{appId}/public/data/user_configs/{id}
+            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
             
-            unsubscribe = onSnapshot(userDocRef, (docSnap) => {
-                if (docSnap.exists()) {
-                    window.currentData = docSnap.data();
+            unsubscribe = onSnapshot(docRef, (snap) => {
+                if (snap.exists()) {
+                    window.currentData = snap.data();
+                    window.updateUI();
                 } else {
-                    // Jika ID baru, buat dokumen awal
-                    setDoc(userDocRef, window.currentData);
+                    // ID baru, buat data default di cloud
+                    setDoc(docRef, window.currentData);
                 }
-                window.updateUI();
             }, (err) => {
                 console.error("Firestore Error:", err);
             });
         };
 
         const syncToCloud = async () => {
-            if (!activeUserId || !auth.currentUser) return;
+            if (!activeUserId || !isAuthReady) return;
             try {
-                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', activeUserId);
-                await setDoc(userDocRef, window.currentData);
+                const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', activeUserId);
+                await setDoc(docRef, window.currentData);
             } catch (e) {
-                console.error("Sync failed", e);
+                console.error("Sync Error:", e);
             }
         };
 
-        // 4. EXPOSE FUNGSI KE GLOBAL
-        window.generateID = () => {
-            const randomID = 'TRD-' + Math.random().toString(36).substr(2, 6).toUpperCase();
-            const input = document.getElementById('manualIdInput');
-            if (input) input.value = randomID;
-        };
-
+        // 4. Global Functions
         window.loginWithID = async () => {
             const input = document.getElementById('manualIdInput');
-            const id = input ? input.value.trim() : "";
+            const id = input.value.trim().toUpperCase();
             
             if (id.length < 4) {
-                alert("ID minimal 4 karakter bro.");
+                alert("ID minimal 4 karakter bro!");
                 return;
             }
 
-            const loginBtn = document.getElementById('loginBtn');
-            loginBtn.innerText = "AUTHENTICATING...";
-            loginBtn.disabled = true;
+            const btn = document.getElementById('loginBtn');
+            btn.innerText = "CONNECTING...";
+            btn.disabled = true;
 
-            try {
-                // Pastikan Auth kelar dulu sebelum lanjut
-                await performAuth(); 
-                
-                activeUserId = id;
-                localStorage.setItem('trading_manual_id', id);
-                
-                // Cek data sekali dulu
-                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
-                const snap = await getDoc(userDocRef);
-                
-                if (snap.exists()) {
-                    window.currentData = snap.data();
-                }
-
-                showApp();
-                startDataListener(id);
-            } catch (err) {
-                console.error("Login Error:", err);
-                alert("Koneksi gagal. Coba lagi nanti.");
-            } finally {
-                loginBtn.innerText = "MASUK / SINKRON";
-                loginBtn.disabled = false;
+            // Pastikan auth udah beres sebelum lanjut
+            if (!isAuthReady) {
+                await initAuth();
             }
-        };
 
-        window.logout = () => {
-            if (unsubscribe) unsubscribe();
-            localStorage.removeItem('trading_manual_id');
-            location.reload();
-        };
-
-        function showApp() {
-            document.getElementById('loginOverlay').classList.add('hidden');
-            document.getElementById('mainContent').classList.remove('hidden');
-            document.getElementById('displayId').innerText = activeUserId;
-        }
-
-        // 5. UI Logic
-        window.updateUI = () => {
-            const data = window.currentData;
-            const totalPnl = (data.currentBalance || 0) - (data.initialBalance || 0);
-            const growth = data.initialBalance > 0 ? (totalPnl / data.initialBalance) * 100 : 0;
-            const wins = (data.trades || []).filter(t => t.netProfit > 0).length;
-            const winRate = (data.trades || []).length > 0 ? (wins / data.trades.length * 100).toFixed(1) : 0;
-
-            document.getElementById('totalBalanceDisplay').innerText = window.formatCurrency(data.currentBalance || 0);
-            document.getElementById('winRateDisplay').innerText = winRate + "%";
-            document.getElementById('totalPnlDisplay').innerText = (totalPnl >= 0 ? '+' : '') + window.formatCurrency(totalPnl);
-            document.getElementById('totalPnlDisplay').className = `text-4xl font-black ${totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            activeUserId = id;
+            localStorage.setItem('trading_manual_id', id);
             
-            const growthEl = document.getElementById('growthDisplay');
-            growthEl.innerText = `${growth >= 0 ? '+' : ''}${growth.toFixed(2)}% Growth`;
-            growthEl.className = growth >= 0 ? "px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-400 text-[10px] font-bold border border-emerald-500/20" : "px-2 py-1 rounded-md bg-rose-500/10 text-rose-400 text-[10px] font-bold border border-rose-500/20";
+            // Trigger data fetch
+            startDataListener(id);
+            showApp();
             
-            renderHistory();
+            btn.innerText = "MASUK / SINKRON";
+            btn.disabled = false;
         };
 
         window.addTrade = async () => {
@@ -159,10 +120,14 @@
             const margin = parseFloat(document.getElementById('margin').value);
             const lev = parseFloat(document.getElementById('leverage').value);
             
-            if (isNaN(entry) || isNaN(exit) || isNaN(margin) || isNaN(lev)) return;
+            if (isNaN(entry) || isNaN(exit) || isNaN(margin) || isNaN(lev)) {
+                alert("Isi semua data dengan bener!");
+                return;
+            }
 
             const positionSize = margin * lev;
-            let priceDiffPercent = (window.tradeSide === 'SHORT') ? ((entry - exit) / entry) : ((exit - entry) / entry);
+            let diff = (window.tradeSide === 'SHORT') ? (entry - exit) : (exit - entry);
+            let priceDiffPercent = diff / entry;
             const netProfit = (positionSize * priceDiffPercent) - (positionSize * 0.0012);
             
             window.currentData.currentBalance += netProfit;
@@ -175,174 +140,183 @@
                 entry, exit, lev, margin,
                 roi: (netProfit / margin) * 100,
                 netProfit,
-                balanceAfter: window.currentData.currentBalance,
                 timestamp: new Date().toISOString()
             });
 
             await syncToCloud();
             window.showPnLCard(window.currentData.trades[0]);
             
+            // Reset input
             document.getElementById('coinName').value = '';
             document.getElementById('entryPrice').value = '';
             document.getElementById('exitPrice').value = '';
         };
 
-        window.formatCurrency = (val) => { 
-            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); 
+        window.editBalance = async () => {
+            const newBal = prompt("Masukan Balance Baru ($):", window.currentData.currentBalance);
+            if (newBal !== null && !isNaN(parseFloat(newBal))) {
+                window.currentData.currentBalance = parseFloat(newBal);
+                window.currentData.initialBalance = parseFloat(newBal); // Reset growth point
+                await syncToCloud();
+            }
         };
 
-        function renderHistory() {
-            const body = document.getElementById('tradeHistoryBody');
-            if(!body) return;
-            if (!window.currentData.trades || window.currentData.trades.length === 0) {
-                body.innerHTML = '<tr><td colspan="5" class="py-20 text-center text-slate-600 font-bold uppercase tracking-widest text-xs opacity-50">No Data Logged</td></tr>';
-                return;
+        window.resetBalance = async () => {
+            if (confirm("Hapus SEMUA history dan reset balance ke $3?")) {
+                window.currentData = {
+                    initialBalance: 3,
+                    currentBalance: 3,
+                    trades: []
+                };
+                await syncToCloud();
             }
-            body.innerHTML = window.currentData.trades.map(t => `
-                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-all">
-                    <td class="py-4 px-2">
-                        <div class="font-black text-blue-400 italic">${t.coin}</div>
-                        <div class="text-[9px] text-slate-600 font-bold uppercase">${new Date(t.timestamp).toLocaleDateString()}</div>
-                    </td>
-                    <td class="py-4"><span class="${t.side === 'LONG' ? 'text-emerald-500' : 'text-rose-500'} font-black text-xs">${t.side} ${t.lev}x</span></td>
-                    <td class="py-4 text-center font-black ${t.roi >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.roi.toFixed(1)}%</td>
-                    <td class="py-4 text-center font-bold ${t.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${window.formatCurrency(t.netProfit)}</td>
-                    <td class="py-4 text-right"><button onclick='window.showPnLCard(${JSON.stringify(t).replace(/'/g, "&apos;")})' class="bg-white/5 hover:bg-white/10 px-3 py-2 rounded-xl text-white text-[9px] font-black border border-white/10 uppercase transition-all">Card</button></td>
-                </tr>
-            `).join('');
+        };
+
+        window.logout = () => {
+            if (unsubscribe) unsubscribe();
+            localStorage.removeItem('trading_manual_id');
+            location.reload();
+        };
+
+        window.generateID = () => {
+            document.getElementById('manualIdInput').value = 'TRD-' + Math.random().toString(36).substr(2, 5).toUpperCase();
+        };
+
+        function showApp() {
+            document.getElementById('loginOverlay').classList.add('hidden');
+            document.getElementById('mainContent').classList.remove('hidden');
+            document.getElementById('displayId').innerText = activeUserId;
         }
 
-        // Init process
-        onAuthStateChanged(auth, (user) => {
-            if (user && activeUserId) {
-                showApp();
-                startDataListener(activeUserId);
-            }
-        });
+        // Start Auth process on load
+        initAuth();
 
-        window.onload = async () => {
-            if (activeUserId) {
-                try {
-                    await performAuth();
-                } catch(e) { console.error("Initial auth failed"); }
-            }
-        };
     </script>
 
     <style>
         body { 
             background-color: #020617; 
-            background-image: radial-gradient(at 0% 0%, rgba(30, 58, 138, 0.1) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(88, 28, 135, 0.1) 0px, transparent 50%);
+            background-image: radial-gradient(at 0% 0%, rgba(30, 58, 138, 0.15) 0px, transparent 50%), radial-gradient(at 100% 100%, rgba(88, 28, 135, 0.15) 0px, transparent 50%);
             color: #f8fafc; font-family: 'Inter', sans-serif; min-height: 100vh;
         }
-        .glass-card { background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
-        input { background-color: rgba(2, 6, 23, 0.8) !important; border: 1px solid rgba(255, 255, 255, 0.1) !important; color: white !important; }
-        .editable-balance:hover { cursor: pointer; color: #60a5fa; }
+        .glass-card { background: rgba(15, 23, 42, 0.7); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.05); }
+        input { background-color: rgba(2, 6, 23, 0.9) !important; border: 1px solid rgba(255, 255, 255, 0.1) !important; color: white !important; }
+        .editable-balance:hover { cursor: pointer; opacity: 0.8; }
     </style>
 </head>
 <body class="p-4 md:p-8 flex items-center justify-center">
 
     <!-- LOGIN OVERLAY -->
     <div id="loginOverlay" class="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-slate-950">
-        <div class="max-w-md w-full glass-card p-10 rounded-[2.5rem] text-center space-y-6">
+        <div class="max-w-md w-full glass-card p-10 rounded-[2.5rem] text-center space-y-8">
             <div class="space-y-2">
-                <h1 class="text-3xl font-black italic tracking-tighter text-blue-500">TRADING CLOUD</h1>
-                <p class="text-slate-500 text-xs font-bold uppercase tracking-widest">Akses Jurnal Dimana Saja</p>
-            </div>
-            
-            <div class="space-y-3">
-                <div class="relative">
-                    <input type="text" id="manualIdInput" placeholder="MASUKAN ID TRADING..." class="w-full rounded-2xl p-5 text-center font-black tracking-widest uppercase outline-none focus:ring-2 ring-blue-500/50 transition-all">
-                    <button type="button" onclick="window.generateID()" class="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400 font-bold text-[10px] uppercase cursor-pointer">Random</button>
+                <div class="w-16 h-16 bg-blue-600 rounded-2xl mx-auto flex items-center justify-center shadow-2xl shadow-blue-500/20 mb-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-8 w-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                    </svg>
                 </div>
-                <button id="loginBtn" onclick="window.loginWithID()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-900/20 transition-all active:scale-95 uppercase tracking-widest">Masuk / Sinkron</button>
+                <h1 class="text-3xl font-black italic tracking-tighter text-white">TRADING CLOUD</h1>
+                <p class="text-slate-500 text-[10px] font-bold uppercase tracking-[0.3em]">Institutional Journal v2</p>
             </div>
             
-            <p class="text-[10px] text-slate-600 font-medium leading-relaxed">Pake ID yang sama buat sinkron data. Simpen ID lo baik-baik.</p>
+            <div class="space-y-4">
+                <div class="relative">
+                    <input type="text" id="manualIdInput" placeholder="ID TRADING" class="w-full rounded-2xl p-5 text-center font-black tracking-widest uppercase outline-none focus:ring-2 ring-blue-500/50 transition-all text-xl">
+                    <button type="button" onclick="window.generateID()" class="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400 font-bold text-[10px] uppercase">New</button>
+                </div>
+                <button id="loginBtn" onclick="window.loginWithID()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase tracking-widest text-sm">Masuk / Sinkron</button>
+            </div>
+            
+            <p class="text-[10px] text-slate-600 font-medium leading-relaxed uppercase tracking-tighter italic">Data disimpan di cloud. Gunakan ID yang sama di perangkat lain.</p>
         </div>
     </div>
 
     <!-- MAIN APP CONTENT -->
-    <div id="mainContent" class="hidden w-full max-w-7xl mx-auto space-y-6">
-        <div class="flex justify-between items-center px-2">
+    <div id="mainContent" class="hidden w-full max-w-6xl mx-auto space-y-6 pb-20">
+        <div class="flex justify-between items-center px-4">
             <div class="flex items-center gap-3">
                 <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
-                <span class="text-[10px] font-black text-slate-500 uppercase tracking-widest">ID: <span id="displayId" class="text-emerald-400">---</span></span>
+                <span class="text-[10px] font-black text-slate-500 uppercase tracking-widest">Live Cloud: <span id="displayId" class="text-emerald-400 italic">---</span></span>
             </div>
-            <button onclick="logout()" class="text-rose-500 hover:text-rose-400 text-[10px] font-black uppercase tracking-widest">Ganti ID / Logout</button>
+            <button onclick="logout()" class="text-rose-500 hover:text-rose-400 text-[10px] font-black uppercase tracking-widest border border-rose-500/20 px-3 py-1 rounded-full">Switch Account</button>
         </div>
 
+        <!-- STATS GRID -->
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div class="md:col-span-2 glass-card p-8 rounded-[2rem] flex flex-col justify-between">
-                <div onclick="window.editBalance()" class="editable-balance transition-all">
-                    <p class="text-slate-500 uppercase tracking-[0.2em] text-[10px] font-black mb-1">Portfolio Balance (Click to Edit)</p>
-                    <h1 id="totalBalanceDisplay" class="text-5xl md:text-6xl font-black tracking-tighter">$0.00</h1>
+            <div class="md:col-span-2 glass-card p-8 rounded-[2.5rem] flex flex-col justify-between min-h-[200px]">
+                <div onclick="window.editBalance()" class="editable-balance">
+                    <p class="text-slate-500 uppercase tracking-[0.2em] text-[10px] font-black mb-1 flex items-center gap-2">
+                        Available Balance 
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
+                    </p>
+                    <h1 id="totalBalanceDisplay" class="text-5xl md:text-6xl font-black tracking-tighter text-white">$0.00</h1>
                 </div>
-                <div class="flex items-center gap-4 mt-6">
+                <div class="flex items-center gap-4 mt-4">
                     <span id="growthDisplay" class="px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-400 text-[10px] font-bold border border-emerald-500/20">+0% Growth</span>
-                    <div class="flex gap-3">
-                        <button onclick="window.editBalance()" class="text-blue-500 hover:text-blue-400 text-[10px] font-black uppercase tracking-widest transition-all">Edit Balance</button>
-                        <span class="text-slate-800">|</span>
-                        <button onclick="window.resetBalance()" class="text-slate-600 hover:text-rose-500 text-[10px] font-black uppercase tracking-widest transition-all">Hard Reset</button>
-                    </div>
+                    <button onclick="window.resetBalance()" class="text-slate-600 hover:text-rose-500 text-[9px] font-black uppercase tracking-widest transition-all">Reset All</button>
                 </div>
             </div>
-            <div class="glass-card p-6 rounded-[2rem] flex flex-col justify-center">
+            <div class="glass-card p-6 rounded-[2.5rem] flex flex-col justify-center text-center">
                 <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">Win Rate</p>
-                <h3 id="winRateDisplay" class="text-4xl font-black text-white">0%</h3>
+                <h3 id="winRateDisplay" class="text-4xl font-black text-white italic">0%</h3>
             </div>
-            <div class="glass-card p-6 rounded-[2rem] flex flex-col justify-center">
-                <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">Net PnL</p>
+            <div class="glass-card p-6 rounded-[2.5rem] flex flex-col justify-center text-center">
+                <p class="text-slate-500 text-[10px] font-black uppercase tracking-widest mb-1">Total PnL</p>
                 <h3 id="totalPnlDisplay" class="text-4xl font-black text-white">$0.00</h3>
             </div>
         </div>
 
-        <!-- FORM & HISTORY (GRID) -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <div class="lg:col-span-4 glass-card p-8 rounded-[2rem] space-y-6 h-fit">
-                <h2 class="text-xl font-black text-white italic tracking-tight uppercase">New Trade</h2>
-                <div class="space-y-1">
-                    <label class="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] ml-1">Pair</label>
-                    <input type="text" id="coinName" placeholder="BTCUSDT" class="w-full rounded-2xl p-4 outline-none uppercase font-black text-blue-400">
-                </div>
-                <div class="flex gap-2">
-                    <button onclick="window.setSide('LONG')" id="btnLong" class="flex-1 py-4 rounded-2xl font-black bg-emerald-600 text-white shadow-lg shadow-emerald-900/20">LONG</button>
-                    <button onclick="window.setSide('SHORT')" id="btnShort" class="flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600">SHORT</button>
-                </div>
-                <div class="grid grid-cols-2 gap-4">
+            <!-- INPUT FORM -->
+            <div class="lg:col-span-4 glass-card p-8 rounded-[2.5rem] space-y-6 h-fit sticky top-8">
+                <h2 class="text-xl font-black text-white italic tracking-tight uppercase border-l-4 border-blue-600 pl-4">Log Position</h2>
+                <div class="space-y-4">
                     <div class="space-y-1">
-                        <label class="text-[9px] text-slate-500 font-black uppercase ml-1 tracking-widest">Entry</label>
-                        <input type="number" id="entryPrice" placeholder="0.00" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
+                        <label class="text-[9px] font-black text-slate-500 uppercase tracking-widest ml-1">Pair / Coin</label>
+                        <input type="text" id="coinName" placeholder="BTCUSDT" class="w-full rounded-2xl p-4 outline-none uppercase font-black text-blue-400 text-lg">
                     </div>
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-slate-500 font-black uppercase ml-1 tracking-widest">Exit</label>
-                        <input type="number" id="exitPrice" placeholder="0.00" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
+                    <div class="flex gap-2 p-1 bg-slate-900/50 rounded-2xl border border-white/5">
+                        <button onclick="window.setSide('LONG')" id="btnLong" class="flex-1 py-3 rounded-xl font-black text-xs transition-all">LONG</button>
+                        <button onclick="window.setSide('SHORT')" id="btnShort" class="flex-1 py-3 rounded-xl font-black text-xs transition-all">SHORT</button>
                     </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1">
+                            <label class="text-[9px] text-slate-500 font-black uppercase ml-1">Entry</label>
+                            <input type="number" id="entryPrice" placeholder="0.00" class="w-full rounded-2xl p-4 outline-none font-mono text-sm">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="text-[9px] text-slate-500 font-black uppercase ml-1">Exit</label>
+                            <input type="number" id="exitPrice" placeholder="0.00" class="w-full rounded-2xl p-4 outline-none font-mono text-sm">
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-2 gap-4">
+                        <div class="space-y-1">
+                            <label class="text-[9px] text-slate-500 font-black uppercase ml-1">Margin ($)</label>
+                            <input type="number" id="margin" placeholder="3.0" class="w-full rounded-2xl p-4 outline-none font-mono text-sm">
+                        </div>
+                        <div class="space-y-1">
+                            <label class="text-[9px] text-slate-500 font-black uppercase ml-1">Leverage</label>
+                            <input type="number" id="leverage" value="10" class="w-full rounded-2xl p-4 outline-none font-mono text-sm">
+                        </div>
+                    </div>
+                    <button onclick="window.addTrade()" class="w-full bg-white text-black font-black py-5 rounded-2xl hover:bg-blue-500 hover:text-white transition-all uppercase tracking-[0.2em] text-xs shadow-xl active:scale-95">Record Trade</button>
                 </div>
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-slate-500 font-black uppercase ml-1 tracking-widest">Margin</label>
-                        <input type="number" id="margin" placeholder="3.0" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
-                    </div>
-                    <div class="space-y-1">
-                        <label class="text-[9px] text-slate-500 font-black uppercase ml-1 tracking-widest">Lev x</label>
-                        <input type="number" id="leverage" value="10" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
-                    </div>
-                </div>
-                <button onclick="window.addTrade()" class="w-full bg-white text-black font-black py-5 rounded-2xl hover:bg-slate-200 transition-all uppercase tracking-widest shadow-xl">Simpan Posisi</button>
             </div>
 
-            <div class="lg:col-span-8 glass-card p-8 rounded-[2rem]">
-                <h2 class="text-xl font-black text-white italic tracking-tight uppercase mb-6">Trade History</h2>
+            <!-- HISTORY TABLE -->
+            <div class="lg:col-span-8 glass-card p-8 rounded-[2.5rem]">
+                <h2 class="text-xl font-black text-white italic tracking-tight uppercase mb-6 flex justify-between items-center">
+                    <span>Recent History</span>
+                    <span class="text-[10px] text-slate-600 normal-case font-bold tracking-widest">AUTO-SYNC ENABLED</span>
+                </h2>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left">
                         <thead class="text-slate-600 text-[10px] uppercase font-black border-b border-white/5 tracking-widest">
                             <tr>
-                                <th class="pb-4 px-2">Asset</th>
-                                <th class="pb-4">Type</th>
+                                <th class="pb-4 px-2">Asset Info</th>
                                 <th class="pb-4 text-center">ROE%</th>
                                 <th class="pb-4 text-center">Net PnL</th>
-                                <th class="pb-4 text-right">Action</th>
+                                <th class="pb-4 text-right">Card</th>
                             </tr>
                         </thead>
                         <tbody id="tradeHistoryBody" class="text-sm"></tbody>
@@ -352,61 +326,98 @@
         </div>
     </div>
 
-    <!-- PnL Card Modal -->
-    <div id="modalCard" class="fixed inset-0 bg-slate-950/95 z-[70] hidden flex items-center justify-center p-4 backdrop-blur-md">
-        <div class="max-w-sm w-full space-y-4">
-            <div id="pnlCard" class="rounded-[2.5rem] p-8 border border-white/10 shadow-2xl relative overflow-hidden transition-all duration-500 bg-[#0F172A]">
-                <div class="flex justify-between items-start mb-10">
+    <!-- PnL Modal -->
+    <div id="modalCard" class="fixed inset-0 bg-slate-950/98 z-[70] hidden flex items-center justify-center p-4 backdrop-blur-xl">
+        <div class="max-w-sm w-full space-y-6">
+            <div id="pnlCard" class="rounded-[3rem] p-10 border border-white/10 shadow-2xl relative overflow-hidden bg-[#0F172A]">
+                <div class="flex justify-between items-start mb-12">
                     <div>
-                        <h4 id="cardPair" class="text-2xl font-black text-white tracking-tighter italic">BTCUSDT</h4>
-                        <p id="cardSide" class="text-[10px] font-bold px-2 py-0.5 rounded text-white w-fit mt-1">LONG</p>
+                        <h4 id="cardPair" class="text-3xl font-black text-white tracking-tighter italic leading-none">BTCUSDT</h4>
+                        <p id="cardSide" class="text-[9px] font-black px-3 py-1 rounded-full text-white w-fit mt-3 uppercase tracking-widest">LONG 10X</p>
                     </div>
-                    <div class="text-right"><p class="text-[9px] font-black text-slate-500 uppercase tracking-widest">FUTURES JOURNAL</p></div>
+                    <div class="text-right"><p class="text-[8px] font-black text-blue-500 uppercase tracking-[0.3em]">Institutional Log</p></div>
                 </div>
-                <div class="mb-10">
-                    <p class="text-slate-500 text-[10px] mb-1 font-black uppercase tracking-[0.2em]">Realized ROE</p>
-                    <h2 id="cardRoe" class="text-7xl font-black tracking-tighter">+0.00%</h2>
+                <div class="mb-12">
+                    <p class="text-slate-500 text-[9px] mb-2 font-black uppercase tracking-[0.2em] opacity-60">Realized Profit / Loss</p>
+                    <h2 id="cardRoe" class="text-7xl font-black tracking-tighter italic">+0.00%</h2>
                 </div>
-                <div class="grid grid-cols-2 gap-6 border-t border-white/5 pt-6 text-[10px]">
-                    <div><p class="text-slate-500 uppercase font-black mb-1 tracking-widest">Entry Price</p><p id="cardEntry" class="text-white font-mono">0.00</p></div>
-                    <div><p class="text-slate-500 uppercase font-black mb-1 tracking-widest">Exit Price</p><p id="cardExit" class="text-white font-mono">0.00</p></div>
-                    <div class="col-span-2"><p class="text-slate-500 uppercase font-black mb-1 tracking-widest">Net Profit/Loss</p><p id="cardPnl" class="text-xl font-black tracking-tight">+$0.00</p></div>
+                <div class="grid grid-cols-2 gap-8 border-t border-white/5 pt-8">
+                    <div><p class="text-slate-500 uppercase font-black text-[8px] mb-1 tracking-widest">Entry</p><p id="cardEntry" class="text-white font-mono text-xs">0.00</p></div>
+                    <div><p class="text-slate-500 uppercase font-black text-[8px] mb-1 tracking-widest">Exit</p><p id="cardExit" class="text-white font-mono text-xs">0.00</p></div>
+                    <div class="col-span-2"><p class="text-slate-500 uppercase font-black text-[8px] mb-2 tracking-widest">Net Result</p><p id="cardPnl" class="text-3xl font-black tracking-tight text-emerald-400">+$0.00</p></div>
                 </div>
             </div>
-            <button onclick="document.getElementById('modalCard').classList.add('hidden')" class="w-full bg-white/5 hover:bg-white/10 text-white py-4 rounded-2xl font-black border border-white/10 uppercase text-xs tracking-widest transition-all">Close Card</button>
+            <button onclick="document.getElementById('modalCard').classList.add('hidden')" class="w-full bg-slate-900 text-white py-5 rounded-[2rem] font-black border border-white/5 uppercase text-[10px] tracking-[0.3em] hover:bg-slate-800 transition-all">Dismiss Card</button>
         </div>
     </div>
 
     <script>
-        // Non-Firebase Logic
+        // UI Helpers
         window.tradeSide = 'LONG';
         window.setSide = (side) => {
             window.tradeSide = side;
-            document.getElementById('btnLong').className = side === 'LONG' ? "flex-1 py-4 rounded-2xl font-black bg-emerald-600 text-white shadow-lg shadow-emerald-900/20" : "flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600";
-            document.getElementById('btnShort').className = side === 'SHORT' ? "flex-1 py-4 rounded-2xl font-black bg-rose-600 text-white shadow-lg shadow-rose-900/20" : "flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600";
+            document.getElementById('btnLong').className = side === 'LONG' ? "flex-1 py-3 rounded-xl font-black text-xs bg-emerald-600 text-white shadow-lg shadow-emerald-900/40" : "flex-1 py-3 rounded-xl font-black text-xs text-slate-600 hover:text-white transition-all";
+            document.getElementById('btnShort').className = side === 'SHORT' ? "flex-1 py-3 rounded-xl font-black text-xs bg-rose-600 text-white shadow-lg shadow-rose-900/40" : "flex-1 py-3 rounded-xl font-black text-xs text-slate-600 hover:text-white transition-all";
         };
+        window.setSide('LONG'); // Default
+
+        window.formatCurrency = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
+
+        window.updateUI = () => {
+            const data = window.currentData;
+            const totalPnl = data.currentBalance - data.initialBalance;
+            const growth = data.initialBalance > 0 ? (totalPnl / data.initialBalance) * 100 : 0;
+            const trades = data.trades || [];
+            const wins = trades.filter(t => t.netProfit > 0).length;
+            const winRate = trades.length > 0 ? (wins / trades.length * 100).toFixed(1) : 0;
+
+            document.getElementById('totalBalanceDisplay').innerText = window.formatCurrency(data.currentBalance);
+            document.getElementById('winRateDisplay').innerText = winRate + "%";
+            document.getElementById('totalPnlDisplay').innerText = (totalPnl >= 0 ? '+' : '') + window.formatCurrency(totalPnl);
+            document.getElementById('totalPnlDisplay').className = `text-4xl font-black italic ${totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+            
+            const growthEl = document.getElementById('growthDisplay');
+            growthEl.innerText = `${growth >= 0 ? '+' : ''}${growth.toFixed(2)}% Growth`;
+            growthEl.className = growth >= 0 ? "px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-400 text-[10px] font-bold border border-emerald-500/20" : "px-2 py-1 rounded-md bg-rose-500/10 text-rose-400 text-[10px] font-bold border border-rose-500/20";
+            
+            renderHistory();
+        };
+
+        function renderHistory() {
+            const body = document.getElementById('tradeHistoryBody');
+            const trades = window.currentData.trades || [];
+            if (trades.length === 0) {
+                body.innerHTML = '<tr><td colspan="4" class="py-20 text-center text-slate-700 font-black uppercase tracking-widest text-[10px]">Empty Terminal</td></tr>';
+                return;
+            }
+            body.innerHTML = trades.map(t => `
+                <tr class="border-b border-white/5 hover:bg-white/[0.02] transition-all group">
+                    <td class="py-5 px-2">
+                        <div class="font-black text-white italic text-base">${t.coin}</div>
+                        <div class="text-[9px] font-black uppercase ${t.side === 'LONG' ? 'text-emerald-500' : 'text-rose-500'}">${t.side} ${t.lev}x</div>
+                    </td>
+                    <td class="py-5 text-center font-black ${t.roi >= 0 ? 'text-emerald-400' : 'text-rose-400'} text-base">${t.roi >= 0 ? '+' : ''}${t.roi.toFixed(1)}%</td>
+                    <td class="py-5 text-center font-bold ${t.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${window.formatCurrency(t.netProfit)}</td>
+                    <td class="py-5 text-right"><button onclick='window.showPnLCard(${JSON.stringify(t)})' class="bg-blue-600/10 hover:bg-blue-600 text-blue-500 hover:text-white px-4 py-2 rounded-xl text-[9px] font-black border border-blue-500/20 uppercase transition-all">Card</button></td>
+                </tr>
+            `).join('');
+        }
 
         window.showPnLCard = (trade) => {
             const isProfit = trade.netProfit >= 0;
             const colorClass = isProfit ? 'text-emerald-400' : 'text-rose-400';
             const bgColorClass = isProfit ? 'bg-emerald-600' : 'bg-rose-600';
-            const shadowColor = isProfit ? 'rgba(16, 185, 129, 0.4)' : 'rgba(225, 29, 72, 0.4)';
-
+            
             document.getElementById('cardPair').innerText = trade.coin;
-            document.getElementById('cardSide').innerText = `${trade.side} ${trade.lev}x`;
-            document.getElementById('cardSide').className = `text-[10px] font-black px-2 py-0.5 rounded text-white w-fit mt-1 ${bgColorClass}`;
-            
-            const roeEl = document.getElementById('cardRoe');
-            roeEl.innerText = `${isProfit ? '+' : ''}${trade.roi.toFixed(2)}%`;
-            roeEl.className = `text-7xl font-black tracking-tighter ${colorClass}`;
-            
-            const pnlEl = document.getElementById('cardPnl');
-            pnlEl.innerText = `${isProfit ? '+' : ''}${window.formatCurrency(trade.netProfit)}`;
-            pnlEl.className = `text-xl font-black tracking-tight ${colorClass}`;
-            
+            document.getElementById('cardSide').innerText = `${trade.side} ${trade.lev}X`;
+            document.getElementById('cardSide').className = `text-[9px] font-black px-3 py-1 rounded-full text-white w-fit mt-3 uppercase tracking-widest ${bgColorClass}`;
+            document.getElementById('cardRoe').innerText = `${isProfit ? '+' : ''}${trade.roi.toFixed(2)}%`;
+            document.getElementById('cardRoe').className = `text-7xl font-black tracking-tighter italic ${colorClass}`;
+            document.getElementById('cardPnl').innerText = `${isProfit ? '+' : ''}${window.formatCurrency(trade.netProfit)}`;
+            document.getElementById('cardPnl').className = `text-3xl font-black tracking-tight ${colorClass}`;
             document.getElementById('cardEntry').innerText = trade.entry.toLocaleString();
             document.getElementById('cardExit').innerText = trade.exit.toLocaleString();
-            document.getElementById('pnlCard').style.boxShadow = `0 0 60px ${shadowColor}`;
+            document.getElementById('pnlCard').style.boxShadow = `0 0 80px ${isProfit ? 'rgba(16, 185, 129, 0.2)' : 'rgba(225, 29, 72, 0.2)'}`;
             document.getElementById('modalCard').classList.remove('hidden');
         };
     </script>
