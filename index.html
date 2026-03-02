@@ -26,7 +26,6 @@
         let activeUserId = localStorage.getItem('trading_manual_id');
         let unsubscribe = null;
 
-        // FIX: Jadikan formatCurrency global agar bisa diakses oleh window.showPnLCard
         window.formatCurrency = (val) => { 
             return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); 
         };
@@ -67,9 +66,13 @@
             }
         };
 
+        // FIX: Fungsi generateID sekarang ditempel ke window biar bisa dipanggil dari HTML
         window.generateID = () => {
             const randomID = 'TRD-' + Math.random().toString(36).substr(2, 6).toUpperCase();
-            document.getElementById('manualIdInput').value = randomID;
+            const input = document.getElementById('manualIdInput');
+            if (input) {
+                input.value = randomID;
+            }
         };
 
         window.loginWithID = async () => {
@@ -238,7 +241,8 @@
             <div class="space-y-3">
                 <div class="relative">
                     <input type="text" id="manualIdInput" placeholder="MASUKAN ID TRADING..." class="w-full rounded-2xl p-5 text-center font-black tracking-widest uppercase outline-none focus:ring-2 ring-blue-500/50 transition-all">
-                    <button onclick="generateID()" class="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400 font-bold text-[10px] uppercase">Random</button>
+                    <!-- Tombol Random di bawah ini sekarang aman panggil window.generateID() -->
+                    <button type="button" onclick="window.generateID()" class="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400 font-bold text-[10px] uppercase cursor-pointer">Random</button>
                 </div>
                 <button onclick="loginWithID()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-900/20 transition-all active:scale-95 uppercase tracking-widest">Masuk / Sinkron</button>
             </div>
@@ -247,10 +251,8 @@
         </div>
     </div>
 
-    <!-- MAIN APP CONTENT -->
+    <!-- MAIN APP CONTENT (Sama seperti sebelumnya) -->
     <div id="mainContent" class="hidden w-full max-w-7xl mx-auto space-y-6">
-        
-        <!-- Header / Nav -->
         <div class="flex justify-between items-center px-2">
             <div class="flex items-center gap-3">
                 <div class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></div>
@@ -259,7 +261,6 @@
             <button onclick="logout()" class="text-rose-500 hover:text-rose-400 text-[10px] font-black uppercase tracking-widest">Ganti ID / Logout</button>
         </div>
 
-        <!-- Dashboard Stats -->
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div class="md:col-span-2 glass-card p-8 rounded-[2rem] flex flex-col justify-between">
                 <div onclick="editBalance()" class="editable-balance transition-all">
@@ -286,20 +287,16 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <!-- Journal Form -->
             <div class="lg:col-span-4 glass-card p-8 rounded-[2rem] space-y-6 h-fit">
                 <h2 class="text-xl font-black text-white italic tracking-tight uppercase">New Trade</h2>
-                
                 <div class="space-y-1">
                     <label class="text-[9px] font-black text-slate-500 uppercase tracking-[0.2em] ml-1">Pair</label>
                     <input type="text" id="coinName" placeholder="BTCUSDT" class="w-full rounded-2xl p-4 outline-none uppercase font-black text-blue-400">
                 </div>
-
                 <div class="flex gap-2">
                     <button onclick="setSide('LONG')" id="btnLong" class="flex-1 py-4 rounded-2xl font-black bg-emerald-600 text-white shadow-lg shadow-emerald-900/20">LONG</button>
                     <button onclick="setSide('SHORT')" id="btnShort" class="flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600">SHORT</button>
                 </div>
-
                 <div class="grid grid-cols-2 gap-4">
                     <div class="space-y-1">
                         <label class="text-[9px] text-slate-500 font-black uppercase ml-1 tracking-widest">Entry</label>
@@ -310,7 +307,6 @@
                         <input type="number" id="exitPrice" placeholder="0.00" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
                     </div>
                 </div>
-
                 <div class="grid grid-cols-2 gap-4">
                     <div class="space-y-1">
                         <label class="text-[9px] text-slate-500 font-black uppercase ml-1 tracking-widest">Margin</label>
@@ -321,11 +317,9 @@
                         <input type="number" id="leverage" value="10" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
                     </div>
                 </div>
-
                 <button onclick="addTrade()" class="w-full bg-white text-black font-black py-5 rounded-2xl hover:bg-slate-200 transition-all uppercase tracking-widest shadow-xl">Simpan Posisi</button>
             </div>
 
-            <!-- History List -->
             <div class="lg:col-span-8 glass-card p-8 rounded-[2rem]">
                 <h2 class="text-xl font-black text-white italic tracking-tight uppercase mb-6">Trade History</h2>
                 <div class="overflow-x-auto">
@@ -346,7 +340,7 @@
         </div>
     </div>
 
-    <!-- PnL Card Modal -->
+    <!-- PnL Card Modal (Sama seperti sebelumnya) -->
     <div id="modalCard" class="fixed inset-0 bg-slate-950/95 z-[70] hidden flex items-center justify-center p-4 backdrop-blur-md">
         <div class="max-w-sm w-full space-y-4">
             <div id="pnlCard" class="rounded-[2.5rem] p-8 border border-white/10 shadow-2xl relative overflow-hidden transition-all duration-500 bg-[#0F172A]">
