@@ -3,15 +3,15 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Crypto Futures Journal </title>
+    <title>Crypto Futures Journal</title>
     <script src="https://cdn.tailwindcss.com"></script>
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, onSnapshot, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Global State & Config
+        // 1. Inisialisasi Dasar
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -27,30 +27,36 @@
         let activeUserId = localStorage.getItem('trading_manual_id');
         let unsubscribe = null;
 
-        // Utility: Format Currency
-        window.formatCurrency = (val) => { 
-            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); 
-        };
-
-        // --- AUTH & SYNC LOGIC ---
-
-        const initAuth = async () => {
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                await signInWithCustomToken(auth, __initial_auth_token);
-            } else {
-                await signInAnonymously(auth);
+        // 2. Fungsi Auth dengan Exponential Backoff (MANDATORY)
+        const performAuth = async (retries = 5, delay = 1000) => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    return await signInWithCustomToken(auth, __initial_auth_token);
+                } else {
+                    return await signInAnonymously(auth);
+                }
+            } catch (err) {
+                if (retries > 0) {
+                    await new Promise(res => setTimeout(res, delay));
+                    return performAuth(retries - 1, delay * 2);
+                }
+                throw err;
             }
         };
 
+        // 3. Listener Data Firestore
         const startDataListener = (id) => {
+            if (!auth.currentUser) return; // Guard Rule 3
             if (unsubscribe) unsubscribe();
-            const userDoc = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
+
+            const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
             
-            unsubscribe = onSnapshot(userDoc, (docSnap) => {
+            unsubscribe = onSnapshot(userDocRef, (docSnap) => {
                 if (docSnap.exists()) {
                     window.currentData = docSnap.data();
                 } else {
-                    syncToCloud(id);
+                    // Jika ID baru, buat dokumen awal
+                    setDoc(userDocRef, window.currentData);
                 }
                 window.updateUI();
             }, (err) => {
@@ -58,18 +64,17 @@
             });
         };
 
-        const syncToCloud = async (id = activeUserId) => {
-            if (!id || !auth.currentUser) return;
+        const syncToCloud = async () => {
+            if (!activeUserId || !auth.currentUser) return;
             try {
-                const userDoc = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
-                await setDoc(userDoc, window.currentData);
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', activeUserId);
+                await setDoc(userDocRef, window.currentData);
             } catch (e) {
                 console.error("Sync failed", e);
             }
         };
 
-        // --- EXPOSE TO GLOBAL (PENTING BIAR BISA DIPENCET) ---
-
+        // 4. EXPOSE FUNGSI KE GLOBAL
         window.generateID = () => {
             const randomID = 'TRD-' + Math.random().toString(36).substr(2, 6).toUpperCase();
             const input = document.getElementById('manualIdInput');
@@ -84,24 +89,33 @@
                 alert("ID minimal 4 karakter bro.");
                 return;
             }
-            
-            // Tunjukin loading dikit biar user tau lagi proses
-            const loginBtn = document.querySelector('button[onclick="loginWithID()"]');
-            const originalText = loginBtn.innerText;
+
+            const loginBtn = document.getElementById('loginBtn');
             loginBtn.innerText = "AUTHENTICATING...";
             loginBtn.disabled = true;
 
             try {
-                await initAuth();
+                // Pastikan Auth kelar dulu sebelum lanjut
+                await performAuth(); 
+                
                 activeUserId = id;
                 localStorage.setItem('trading_manual_id', id);
+                
+                // Cek data sekali dulu
+                const userDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
+                const snap = await getDoc(userDocRef);
+                
+                if (snap.exists()) {
+                    window.currentData = snap.data();
+                }
+
                 showApp();
                 startDataListener(id);
             } catch (err) {
                 console.error("Login Error:", err);
-                alert("Gagal login: " + err.message);
+                alert("Koneksi gagal. Coba lagi nanti.");
             } finally {
-                loginBtn.innerText = originalText;
+                loginBtn.innerText = "MASUK / SINKRON";
                 loginBtn.disabled = false;
             }
         };
@@ -118,8 +132,7 @@
             document.getElementById('displayId').innerText = activeUserId;
         }
 
-        // --- UI & CALCULATIONS ---
-
+        // 5. UI Logic
         window.updateUI = () => {
             const data = window.currentData;
             const totalPnl = (data.currentBalance || 0) - (data.initialBalance || 0);
@@ -174,29 +187,9 @@
             document.getElementById('exitPrice').value = '';
         };
 
-        window.editBalance = async () => {
-            const newBalance = prompt("Update Saldo Saat Ini (USDT):", window.currentData.currentBalance);
-            if (newBalance !== null && !isNaN(parseFloat(newBalance))) {
-                window.currentData.currentBalance = parseFloat(newBalance);
-                const updateInitial = confirm("Update modal awal juga agar perhitungan % Growth akurat?");
-                if (updateInitial) {
-                    window.currentData.initialBalance = window.currentData.currentBalance;
-                }
-                await syncToCloud();
-                window.updateUI();
-            }
+        window.formatCurrency = (val) => { 
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); 
         };
-
-        window.resetBalance = async () => {
-            const val = prompt("Reset Modal & Hapus History (USDT):", window.currentData.initialBalance);
-            if (val !== null && !isNaN(parseFloat(val))) {
-                window.currentData.initialBalance = parseFloat(val);
-                window.currentData.currentBalance = window.currentData.initialBalance;
-                window.currentData.trades = [];
-                await syncToCloud();
-                window.updateUI();
-            }
-        }
 
         function renderHistory() {
             const body = document.getElementById('tradeHistoryBody');
@@ -219,7 +212,7 @@
             `).join('');
         }
 
-        // Listeners
+        // Init process
         onAuthStateChanged(auth, (user) => {
             if (user && activeUserId) {
                 showApp();
@@ -229,7 +222,9 @@
 
         window.onload = async () => {
             if (activeUserId) {
-                await initAuth();
+                try {
+                    await performAuth();
+                } catch(e) { console.error("Initial auth failed"); }
             }
         };
     </script>
@@ -258,11 +253,9 @@
             <div class="space-y-3">
                 <div class="relative">
                     <input type="text" id="manualIdInput" placeholder="MASUKAN ID TRADING..." class="w-full rounded-2xl p-5 text-center font-black tracking-widest uppercase outline-none focus:ring-2 ring-blue-500/50 transition-all">
-                    <!-- Gunakan window.generateID secara eksplisit -->
                     <button type="button" onclick="window.generateID()" class="absolute right-4 top-1/2 -translate-y-1/2 text-blue-500 hover:text-blue-400 font-bold text-[10px] uppercase cursor-pointer">Random</button>
                 </div>
-                <!-- Gunakan window.loginWithID secara eksplisit -->
-                <button onclick="window.loginWithID()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-900/20 transition-all active:scale-95 uppercase tracking-widest">Masuk / Sinkron</button>
+                <button id="loginBtn" onclick="window.loginWithID()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-900/20 transition-all active:scale-95 uppercase tracking-widest">Masuk / Sinkron</button>
             </div>
             
             <p class="text-[10px] text-slate-600 font-medium leading-relaxed">Pake ID yang sama di HP buat sinkron data. Simpen ID lo baik-baik.</p>
@@ -281,16 +274,16 @@
 
         <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
             <div class="md:col-span-2 glass-card p-8 rounded-[2rem] flex flex-col justify-between">
-                <div onclick="editBalance()" class="editable-balance transition-all">
+                <div onclick="window.editBalance()" class="editable-balance transition-all">
                     <p class="text-slate-500 uppercase tracking-[0.2em] text-[10px] font-black mb-1">Portfolio Balance (Click to Edit)</p>
                     <h1 id="totalBalanceDisplay" class="text-5xl md:text-6xl font-black tracking-tighter">$0.00</h1>
                 </div>
                 <div class="flex items-center gap-4 mt-6">
                     <span id="growthDisplay" class="px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-400 text-[10px] font-bold border border-emerald-500/20">+0% Growth</span>
                     <div class="flex gap-3">
-                        <button onclick="editBalance()" class="text-blue-500 hover:text-blue-400 text-[10px] font-black uppercase tracking-widest transition-all">Edit Balance</button>
+                        <button onclick="window.editBalance()" class="text-blue-500 hover:text-blue-400 text-[10px] font-black uppercase tracking-widest transition-all">Edit Balance</button>
                         <span class="text-slate-800">|</span>
-                        <button onclick="resetBalance()" class="text-slate-600 hover:text-rose-500 text-[10px] font-black uppercase tracking-widest transition-all">Hard Reset</button>
+                        <button onclick="window.resetBalance()" class="text-slate-600 hover:text-rose-500 text-[10px] font-black uppercase tracking-widest transition-all">Hard Reset</button>
                     </div>
                 </div>
             </div>
@@ -304,6 +297,7 @@
             </div>
         </div>
 
+        <!-- FORM & HISTORY (GRID) -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
             <div class="lg:col-span-4 glass-card p-8 rounded-[2rem] space-y-6 h-fit">
                 <h2 class="text-xl font-black text-white italic tracking-tight uppercase">New Trade</h2>
@@ -312,8 +306,8 @@
                     <input type="text" id="coinName" placeholder="BTCUSDT" class="w-full rounded-2xl p-4 outline-none uppercase font-black text-blue-400">
                 </div>
                 <div class="flex gap-2">
-                    <button onclick="setSide('LONG')" id="btnLong" class="flex-1 py-4 rounded-2xl font-black bg-emerald-600 text-white shadow-lg shadow-emerald-900/20">LONG</button>
-                    <button onclick="setSide('SHORT')" id="btnShort" class="flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600">SHORT</button>
+                    <button onclick="window.setSide('LONG')" id="btnLong" class="flex-1 py-4 rounded-2xl font-black bg-emerald-600 text-white shadow-lg shadow-emerald-900/20">LONG</button>
+                    <button onclick="window.setSide('SHORT')" id="btnShort" class="flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600">SHORT</button>
                 </div>
                 <div class="grid grid-cols-2 gap-4">
                     <div class="space-y-1">
@@ -335,7 +329,7 @@
                         <input type="number" id="leverage" value="10" class="w-full rounded-2xl p-4 outline-none font-mono text-xs">
                     </div>
                 </div>
-                <button onclick="addTrade()" class="w-full bg-white text-black font-black py-5 rounded-2xl hover:bg-slate-200 transition-all uppercase tracking-widest shadow-xl">Simpan Posisi</button>
+                <button onclick="window.addTrade()" class="w-full bg-white text-black font-black py-5 rounded-2xl hover:bg-slate-200 transition-all uppercase tracking-widest shadow-xl">Simpan Posisi</button>
             </div>
 
             <div class="lg:col-span-8 glass-card p-8 rounded-[2rem]">
@@ -384,13 +378,13 @@
     </div>
 
     <script>
-        // UI Logic (Non-Firebase)
+        // Non-Firebase Logic
         window.tradeSide = 'LONG';
-        function setSide(side) {
+        window.setSide = (side) => {
             window.tradeSide = side;
             document.getElementById('btnLong').className = side === 'LONG' ? "flex-1 py-4 rounded-2xl font-black bg-emerald-600 text-white shadow-lg shadow-emerald-900/20" : "flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600";
             document.getElementById('btnShort').className = side === 'SHORT' ? "flex-1 py-4 rounded-2xl font-black bg-rose-600 text-white shadow-lg shadow-rose-900/20" : "flex-1 py-4 rounded-2xl font-black bg-slate-900 text-slate-600";
-        }
+        };
 
         window.showPnLCard = (trade) => {
             const isProfit = trade.netProfit >= 0;
