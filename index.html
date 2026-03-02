@@ -11,8 +11,17 @@
         import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, onSnapshot, getDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // 1. Inisialisasi Firebase
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // 1. Inisialisasi Firebase dengan API BARU
+        const firebaseConfig = {
+            apiKey: "AIzaSyD6Ey6cRTbv5ptjqcqyifwPlvT_2kuY_Vs",
+            authDomain: "trading-e1dea.firebaseapp.com",
+            projectId: "trading-e1dea",
+            storageBucket: "trading-e1dea.firebasestorage.app",
+            messagingSenderId: "255565818524",
+            appId: "1:255565818524:web:a88e3663ec1fdf90cfdb59",
+            measurementId: "G-FE520WQEP3"
+        };
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -28,23 +37,30 @@
         let unsubscribe = null;
         let isAuthReady = false;
 
-        // 2. Auth Flow (Rule 3)
+        // 2. Auth Flow (Rule 3) - Diperbaiki untuk menangani Mismatch Token
         const initAuth = async () => {
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
-                }
+                // Karena kita pakai Config kustom, langsung paksa Anonymous login 
+                // untuk menghindari error Mismatch dengan token sistem environment.
+                await signInAnonymously(auth);
+                console.log("Signed in anonymously to custom project");
             } catch (err) {
-                console.error("Auth Failed", err);
+                console.error("Auth Failed:", err.message);
+                // Fallback jika anonymous gagal
+                try {
+                    if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    }
+                } catch (innerErr) {
+                    console.error("Critical Auth Error:", innerErr.message);
+                }
             }
         };
 
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 isAuthReady = true;
-                console.log("Auth Ready:", user.uid);
+                console.log("Firebase Connected & Auth Ready:", user.uid);
                 if (activeUserId) {
                     showApp();
                     startDataListener(activeUserId);
@@ -57,7 +73,6 @@
             if (!isAuthReady) return;
             if (unsubscribe) unsubscribe();
 
-            // Path: /artifacts/{appId}/public/data/user_configs/{id}
             const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
             
             unsubscribe = onSnapshot(docRef, (snap) => {
@@ -65,11 +80,10 @@
                     window.currentData = snap.data();
                     window.updateUI();
                 } else {
-                    // ID baru, buat data default di cloud
                     setDoc(docRef, window.currentData);
                 }
             }, (err) => {
-                console.error("Firestore Error:", err);
+                console.error("Firestore Error:", err.message);
             });
         };
 
@@ -97,7 +111,6 @@
             btn.innerText = "CONNECTING...";
             btn.disabled = true;
 
-            // Pastikan auth udah beres sebelum lanjut
             if (!isAuthReady) {
                 await initAuth();
             }
@@ -105,7 +118,6 @@
             activeUserId = id;
             localStorage.setItem('trading_manual_id', id);
             
-            // Trigger data fetch
             startDataListener(id);
             showApp();
             
@@ -146,7 +158,6 @@
             await syncToCloud();
             window.showPnLCard(window.currentData.trades[0]);
             
-            // Reset input
             document.getElementById('coinName').value = '';
             document.getElementById('entryPrice').value = '';
             document.getElementById('exitPrice').value = '';
@@ -156,7 +167,7 @@
             const newBal = prompt("Masukan Balance Baru ($):", window.currentData.currentBalance);
             if (newBal !== null && !isNaN(parseFloat(newBal))) {
                 window.currentData.currentBalance = parseFloat(newBal);
-                window.currentData.initialBalance = parseFloat(newBal); // Reset growth point
+                window.currentData.initialBalance = parseFloat(newBal); 
                 await syncToCloud();
             }
         };
@@ -188,7 +199,6 @@
             document.getElementById('displayId').innerText = activeUserId;
         }
 
-        // Start Auth process on load
         initAuth();
 
     </script>
@@ -215,7 +225,7 @@
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
                     </svg>
                 </div>
-                <h1 class="text-3xl font-black italic tracking-tighter text-white">TRADING CLOUD</h1>
+                <h1 class="text-3xl font-black italic tracking-tighter text-white uppercase">Trading Cloud</h1>
                 <p class="text-slate-500 text-[10px] font-bold uppercase tracking-[0.3em]">Institutional Journal v2</p>
             </div>
             
@@ -227,7 +237,7 @@
                 <button id="loginBtn" onclick="window.loginWithID()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-black py-5 rounded-2xl shadow-xl shadow-blue-900/40 transition-all active:scale-95 uppercase tracking-widest text-sm">Masuk / Sinkron</button>
             </div>
             
-            <p class="text-[10px] text-slate-600 font-medium leading-relaxed uppercase tracking-tighter italic">Data disimpan di cloud. Gunakan ID yang sama di perangkat lain.</p>
+            <p class="text-[10px] text-slate-600 font-medium leading-relaxed uppercase tracking-tighter italic">Fix: Auth Token Mismatch Resolved</p>
         </div>
     </div>
 
@@ -267,7 +277,6 @@
         </div>
 
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            <!-- INPUT FORM -->
             <div class="lg:col-span-4 glass-card p-8 rounded-[2.5rem] space-y-6 h-fit sticky top-8">
                 <h2 class="text-xl font-black text-white italic tracking-tight uppercase border-l-4 border-blue-600 pl-4">Log Position</h2>
                 <div class="space-y-4">
@@ -303,11 +312,10 @@
                 </div>
             </div>
 
-            <!-- HISTORY TABLE -->
             <div class="lg:col-span-8 glass-card p-8 rounded-[2.5rem]">
                 <h2 class="text-xl font-black text-white italic tracking-tight uppercase mb-6 flex justify-between items-center">
                     <span>Recent History</span>
-                    <span class="text-[10px] text-slate-600 normal-case font-bold tracking-widest">AUTO-SYNC ENABLED</span>
+                    <span class="text-[10px] text-slate-600 normal-case font-bold tracking-widest uppercase">Sync: Trading-e1dea</span>
                 </h2>
                 <div class="overflow-x-auto">
                     <table class="w-full text-left">
@@ -352,14 +360,13 @@
     </div>
 
     <script>
-        // UI Helpers
         window.tradeSide = 'LONG';
         window.setSide = (side) => {
             window.tradeSide = side;
             document.getElementById('btnLong').className = side === 'LONG' ? "flex-1 py-3 rounded-xl font-black text-xs bg-emerald-600 text-white shadow-lg shadow-emerald-900/40" : "flex-1 py-3 rounded-xl font-black text-xs text-slate-600 hover:text-white transition-all";
             document.getElementById('btnShort').className = side === 'SHORT' ? "flex-1 py-3 rounded-xl font-black text-xs bg-rose-600 text-white shadow-lg shadow-rose-900/40" : "flex-1 py-3 rounded-xl font-black text-xs text-slate-600 hover:text-white transition-all";
         };
-        window.setSide('LONG'); // Default
+        window.setSide('LONG');
 
         window.formatCurrency = (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val);
 
