@@ -8,19 +8,10 @@
     
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        const firebaseConfig = {
-            apiKey: "AIzaSyD6Ey6cRTbv5ptjqcqyifwPlvT_2kuY_Vs",
-            authDomain: "trading-e1dea.firebaseapp.com",
-            projectId: "trading-e1dea",
-            storageBucket: "trading-e1dea.firebasestorage.app",
-            messagingSenderId: "255565818524",
-            appId: "1:255565818524:web:5ca8ae2cfed86345cfdb59",
-            measurementId: "G-FF8L2EDXK1"
-        };
-
+        const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
@@ -35,11 +26,24 @@
         let activeUserId = localStorage.getItem('trading_manual_id');
         let unsubscribe = null;
 
+        // FIX: Jadikan formatCurrency global agar bisa diakses oleh window.showPnLCard
+        window.formatCurrency = (val) => { 
+            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); 
+        };
+
         // --- AUTH & SYNC LOGIC ---
+
+        const initAuth = async () => {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+        };
 
         const startDataListener = (id) => {
             if (unsubscribe) unsubscribe();
-            const userDoc = doc(db, 'artifacts', appId, 'public', 'data', id);
+            const userDoc = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
             
             unsubscribe = onSnapshot(userDoc, (docSnap) => {
                 if (docSnap.exists()) {
@@ -48,13 +52,15 @@
                     syncToCloud(id);
                 }
                 window.updateUI();
-            }, (err) => console.error("Firestore Error:", err));
+            }, (err) => {
+                console.error("Firestore Error:", err);
+            });
         };
 
         const syncToCloud = async (id = activeUserId) => {
-            if (!id) return;
+            if (!id || !auth.currentUser) return;
             try {
-                const userDoc = doc(db, 'artifacts', appId, 'public', 'data', id);
+                const userDoc = doc(db, 'artifacts', appId, 'public', 'data', 'user_configs', id);
                 await setDoc(userDoc, window.currentData);
             } catch (e) {
                 console.error("Sync failed", e);
@@ -73,7 +79,7 @@
                 return;
             }
             
-            await signInAnonymously(auth);
+            await initAuth();
             
             activeUserId = id;
             localStorage.setItem('trading_manual_id', id);
@@ -102,9 +108,9 @@
             const wins = (data.trades || []).filter(t => t.netProfit > 0).length;
             const winRate = (data.trades || []).length > 0 ? (wins / data.trades.length * 100).toFixed(1) : 0;
 
-            document.getElementById('totalBalanceDisplay').innerText = formatCurrency(data.currentBalance || 0);
+            document.getElementById('totalBalanceDisplay').innerText = window.formatCurrency(data.currentBalance || 0);
             document.getElementById('winRateDisplay').innerText = winRate + "%";
-            document.getElementById('totalPnlDisplay').innerText = (totalPnl >= 0 ? '+' : '') + formatCurrency(totalPnl);
+            document.getElementById('totalPnlDisplay').innerText = (totalPnl >= 0 ? '+' : '') + window.formatCurrency(totalPnl);
             document.getElementById('totalPnlDisplay').className = `text-4xl font-black ${totalPnl >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
             
             const growthEl = document.getElementById('growthDisplay');
@@ -149,18 +155,14 @@
             document.getElementById('exitPrice').value = '';
         };
 
-        // Fungsi Baru: Ubah Saldo & Modal secara fleksibel
         window.editBalance = async () => {
             const newBalance = prompt("Update Saldo Saat Ini (USDT):", window.currentData.currentBalance);
             if (newBalance !== null && !isNaN(parseFloat(newBalance))) {
                 window.currentData.currentBalance = parseFloat(newBalance);
-                
-                // Tanya apakah mau update modal awal juga (biar % growth akurat)
                 const updateInitial = confirm("Update modal awal juga agar perhitungan % Growth akurat?");
                 if (updateInitial) {
                     window.currentData.initialBalance = window.currentData.currentBalance;
                 }
-                
                 await syncToCloud();
                 window.updateUI();
             }
@@ -175,10 +177,6 @@
                 await syncToCloud();
                 window.updateUI();
             }
-        }
-
-        function formatCurrency(val) { 
-            return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(val); 
         }
 
         function renderHistory() {
@@ -196,18 +194,22 @@
                     </td>
                     <td class="py-4"><span class="${t.side === 'LONG' ? 'text-emerald-500' : 'text-rose-500'} font-black text-xs">${t.side} ${t.lev}x</span></td>
                     <td class="py-4 text-center font-black ${t.roi >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${t.roi.toFixed(1)}%</td>
-                    <td class="py-4 text-center font-bold ${t.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${formatCurrency(t.netProfit)}</td>
-                    <td class="py-4 text-right"><button onclick='window.showPnLCard(${JSON.stringify(t)})' class="bg-white/5 hover:bg-white/10 px-3 py-2 rounded-xl text-white text-[9px] font-black border border-white/10 uppercase transition-all">Card</button></td>
+                    <td class="py-4 text-center font-bold ${t.netProfit >= 0 ? 'text-emerald-400' : 'text-rose-400'}">${window.formatCurrency(t.netProfit)}</td>
+                    <td class="py-4 text-right"><button onclick='window.showPnLCard(${JSON.stringify(t).replace(/'/g, "&apos;")})' class="bg-white/5 hover:bg-white/10 px-3 py-2 rounded-xl text-white text-[9px] font-black border border-white/10 uppercase transition-all">Card</button></td>
                 </tr>
             `).join('');
         }
 
-        window.onload = () => {
+        onAuthStateChanged(auth, (user) => {
+            if (user && activeUserId) {
+                showApp();
+                startDataListener(activeUserId);
+            }
+        });
+
+        window.onload = async () => {
             if (activeUserId) {
-                signInAnonymously(auth).then(() => {
-                    showApp();
-                    startDataListener(activeUserId);
-                });
+                await initAuth();
             }
         };
     </script>
@@ -392,7 +394,7 @@
             roeEl.className = `text-7xl font-black tracking-tighter ${colorClass}`;
             
             const pnlEl = document.getElementById('cardPnl');
-            pnlEl.innerText = `${isProfit ? '+' : ''}${formatCurrency(trade.netProfit)}`;
+            pnlEl.innerText = `${isProfit ? '+' : ''}${window.formatCurrency(trade.netProfit)}`;
             pnlEl.className = `text-xl font-black tracking-tight ${colorClass}`;
             
             document.getElementById('cardEntry').innerText = trade.entry.toLocaleString();
